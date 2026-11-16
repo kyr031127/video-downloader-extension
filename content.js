@@ -49,6 +49,10 @@
       return "OGV";
     }
 
+    if (url.startsWith("blob:")) {
+      return "BLOB";
+    }
+
     return "Unknown";
   }
 

@@ -1,9 +1,17 @@
-
 // ========================================
-// Media Storage
+// Media Storage & Constants
 // ========================================
 
 const tabMedia = new Map();
+
+const MEDIA_MIME_REGEX =
+  /(video\/|application\/vnd\.apple\.mpegurl|application\/x-mpegurl|audio\/mpegurl|application\/dash\+xml)/i;
+
+const MEDIA_EXT_REGEX =
+  /\.(mp4|webm|mov|m4v|ogv|m3u8|mpd)(?:$|[?#])/i;
+
+const SEGMENT_EXT_REGEX =
+  /\.(ts|m4s|fmp4|aac|mp3)(?:$|[?#])/i;
 
 
 // ========================================
@@ -40,32 +48,36 @@ function normalizeMedia(item) {
   // Detect video format
   let format = "Unknown";
 
-  if (path.endsWith(".mp4") || type.includes("mp4")) {
+  if (path.endsWith(".m3u8") || type.includes("mpegurl")) {
+    format = "HLS";
+  } else if (path.endsWith(".mpd") || type.includes("dash")) {
+    format = "DASH";
+  } else if (path.endsWith(".mp4") || type.includes("mp4")) {
     format = "MP4";
   } else if (path.endsWith(".webm") || type.includes("webm")) {
     format = "WebM";
   } else if (path.endsWith(".mov") || type.includes("quicktime")) {
     format = "MOV";
-  } else if (path.endsWith(".m3u8") || type.includes("mpegurl")) {
-    format = "HLS";
-  } else if (path.endsWith(".mpd") || type.includes("dash")) {
-    format = "DASH";
   } else if (path.endsWith(".m4v")) {
     format = "M4V";
   } else if (path.endsWith(".ogv") || type.includes("ogg")) {
     format = "OGV";
+  } else if (url.protocol === "blob:") {
+    format = "BLOB";
+  } else if (type.startsWith("video/")) {
+    format = type.split("/")[1]?.toUpperCase() || "VIDEO";
   }
 
   // Determine download type
   const stream = ["HLS", "DASH"].includes(format);
 
-  const direct =
-    ["http:", "https:"].includes(url.protocol) &&
-    !stream;
-
   const blob =
     url.protocol === "blob:" ||
     url.protocol === "data:";
+
+  const direct =
+    ["http:", "https:"].includes(url.protocol) &&
+    !stream;
 
   // Extract filename
   let name = "video";
@@ -95,6 +107,98 @@ function normalizeMedia(item) {
 
 
 // ========================================
+// Shared Storage Helper
+// ========================================
+
+function saveMediaItems(tabId, rawItems, defaultFrameUrl = "") {
+  if (tabId == null || tabId < 0) {
+    return 0;
+  }
+
+  const current = tabMedia.get(tabId) || [];
+
+  const incoming = (rawItems || [])
+    .map(item =>
+      normalizeMedia({
+        ...item,
+        tabId,
+        frameUrl: item.frameUrl || defaultFrameUrl
+      })
+    )
+    .filter(Boolean);
+
+  if (!incoming.length) {
+    return current.length;
+  }
+
+  // Merge existing and incoming media
+  const mediaMap = new Map(
+    current.map(item => [item.url, item])
+  );
+
+  for (const item of incoming) {
+    mediaMap.set(item.url, item);
+  }
+
+  // Limit stored media to 250 items
+  const updated = [...mediaMap.values()].slice(-250);
+
+  tabMedia.set(tabId, updated);
+
+  chrome.storage.session.set({
+    [`tab_${tabId}`]: updated
+  });
+
+  return updated.length;
+}
+
+
+// ========================================
+// Network Stream Sniffer (webRequest)
+// ========================================
+
+chrome.webRequest.onHeadersReceived.addListener(
+  details => {
+    if (details.tabId < 0) {
+      return;
+    }
+
+    if (SEGMENT_EXT_REGEX.test(details.url)) {
+      return;
+    }
+
+    const contentTypeHeader = details.responseHeaders?.find(
+      h => h.name.toLowerCase() === "content-type"
+    );
+    const contentType = contentTypeHeader?.value || "";
+
+    const isMediaMime = MEDIA_MIME_REGEX.test(contentType);
+    const isMediaExt = MEDIA_EXT_REGEX.test(details.url);
+
+    if (contentType.toLowerCase().includes("video/mp2t")) {
+      return;
+    }
+
+    if (isMediaMime || isMediaExt) {
+      saveMediaItems(
+        details.tabId,
+        [
+          {
+            url: details.url,
+            type: contentType,
+            source: "Network stream",
+            frameUrl: details.initiator || details.documentUrl || ""
+          }
+        ]
+      );
+    }
+  },
+  { urls: ["<all_urls>"] },
+  ["responseHeaders"]
+);
+
+
+// ========================================
 // Runtime Message Handler
 // ========================================
 
@@ -112,39 +216,15 @@ chrome.runtime.onMessage.addListener(
         return;
       }
 
-      const current = tabMedia.get(tabId) || [];
-
-      const incoming = (message.items || [])
-        .map(item =>
-          normalizeMedia({
-            ...item,
-            tabId,
-            frameUrl: sender.url || ""
-          })
-        )
-        .filter(Boolean);
-
-      // Merge existing and incoming media
-      const mediaMap = new Map(
-        current.map(item => [item.url, item])
+      const count = saveMediaItems(
+        tabId,
+        message.items,
+        sender.url || ""
       );
-
-      for (const item of incoming) {
-        mediaMap.set(item.url, item);
-      }
-
-      // Limit stored media to 250 items
-      const updated = [...mediaMap.values()].slice(-250);
-
-      tabMedia.set(tabId, updated);
-
-      chrome.storage.session.set({
-        [`tab_${tabId}`]: updated
-      });
 
       sendResponse({
         ok: true,
-        count: updated.length
+        count
       });
 
       return true;
@@ -278,8 +358,15 @@ function safeFilename(name) {
 
 
 // ========================================
-// Tab Cleanup
+// Tab Lifecycle & Cleanup
 // ========================================
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading" && changeInfo.url) {
+    tabMedia.delete(tabId);
+    chrome.storage.session.remove(`tab_${tabId}`);
+  }
+});
 
 chrome.tabs.onRemoved.addListener(tabId => {
   tabMedia.delete(tabId);
