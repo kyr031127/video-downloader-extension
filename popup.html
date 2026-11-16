@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><div class="logo">V</div><div><h1>Video Downloader</h1><p>ADVANCED · MEDIA DETECTOR</p></div></div>
+    <button id="refresh" class="icon-btn" title="Rescan">↻</button>
+  </header>
+  <section class="summary">
+    <div><span class="eyebrow">DETECTED ON THIS PAGE</span><div class="countline"><strong id="count">0</strong><span>media resources</span></div></div>
+    <span class="live"><i></i> SCANNING</span>
+  </section>
+  <div class="toolbar">
+    <div class="search-wrap"><span>⌕</span><input id="search" type="search" placeholder="Filter videos..."></div>
+    <select id="filter" aria-label="Filter by format">
+      <option value="all">All formats</option><option>MP4</option><option>WebM</option><option>MOV</option>
+      <option>HLS</option><option>DASH</option><option>M4V</option><option>OGV</option>
+    </select>
+  </div>
+  <main id="results"><div class="empty"><div class="empty-icon">◉</div><h2>Looking for videos</h2><p>Play a video or refresh this page to discover media resources.</p></div></main>
+  <footer><span>Downloads are saved by Chrome</span><button id="openDownloads">View downloads ↗</button></footer>
+  <script src="popup.js"></script>
+</body>
+</html>

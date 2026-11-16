@@ -1,0 +1,42 @@
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and debug files
+*.log
+logs/
+debug.log
+
+# Browser data
+cookies.txt
+*.har
+user-data/
+browser-profile/
+
+# Local configuration
+config.local.json
+
+# Operating system
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor settings
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+coverage/
