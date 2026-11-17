@@ -1,6 +1,10 @@
-
-# Dependencies
+# Node.js dependencies
 node_modules/
+
+# Build and distribution packages
+*.crx
+*.zip
+web-ext-artifacts/
 
 # Environment variables
 .env
@@ -40,3 +44,13 @@ desktop.ini
 dist/
 build/
 coverage/
+
+# Temporary video files
+*.mp4
+*.webm
+*.mkv
+*.part
+
+# Temporary files
+*.tmp
+*.temp

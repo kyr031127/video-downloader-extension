@@ -1,4 +1,3 @@
-
 // ========================================
 // DOM Utilities
 // ========================================
@@ -11,7 +10,20 @@ const $ = id => document.getElementById(id);
 // ========================================
 
 let activeTabId = null;
+let activeTabTitle = "";
 let mediaItems = [];
+
+const activeJobs = new Map();
+
+chrome.runtime.onMessage.addListener(message => {
+  if (message?.type === "MERGE_PROGRESS") {
+    activeJobs.set(message.jobId, `⏳ ${message.percent}%`);
+    const btn = document.querySelector(`[data-job="${CSS.escape(message.jobId)}"]`);
+    if (btn) {
+      btn.textContent = `⏳ ${message.percent}%`;
+    }
+  }
+});
 
 
 // ========================================
@@ -22,7 +34,6 @@ function filenameFromUrl(url) {
   try {
     const parsed = new URL(url);
     const filename = parsed.pathname.split("/").pop();
-
     return decodeURIComponent(filename) || "video";
   } catch {
     return "video";
@@ -43,10 +54,7 @@ function escapeHtml(value) {
     "'": "&#39;"
   };
 
-  return String(value).replace(
-    /[&<>"']/g,
-    character => entities[character]
-  );
+  return String(value).replace(/[&<>"']/g, character => entities[character]);
 }
 
 
@@ -59,19 +67,17 @@ function getFilteredMedia() {
   const format = $("filter").value;
 
   return mediaItems.filter(item => {
-    const matchesFormat =
-      format === "all" ||
-      item.format === format;
+    const matchesFormat = format === "all" || item.format === format;
 
     const searchTarget = (
-      item.title + " " +
-      item.url + " " +
+      item.title +
+      " " +
+      item.url +
+      " " +
       item.format
     ).toLowerCase();
 
-    const matchesSearch = searchTarget.includes(query);
-
-    return matchesFormat && matchesSearch;
+    return matchesFormat && searchTarget.includes(query);
   });
 }
 
@@ -81,12 +87,19 @@ function getFilteredMedia() {
 // ========================================
 
 function getMediaDetail(item) {
-  if (item.stream) {
-    return "Streaming manifest · not a standalone video file";
+  const count = item.variants?.length || 0;
+
+  if (item.format === "HLS") {
+    if (item.hlsKind === "master") {
+      return `HLS stream · ${count} quality option${count === 1 ? "" : "s"}`;
+    }
+    return "HLS single-track playlist · may have no audio (reload page to capture the full manifest)";
   }
 
-  if (item.blob) {
-    return "Temporary page URL · direct download unavailable";
+  if (item.format === "DASH") {
+    return count
+      ? `DASH stream · ${count} quality option${count === 1 ? "" : "s"}`
+      : "DASH manifest · ready to merge & download";
   }
 
   if (item.direct) {
@@ -107,11 +120,7 @@ function renderEmptyState() {
   $("results").innerHTML = `
     <div class="empty">
       <div class="empty-icon">◉</div>
-
-      <h2>
-        ${hasMedia ? "No matching videos" : "Looking for videos"}
-      </h2>
-
+      <h2>${hasMedia ? "No matching videos" : "Looking for videos"}</h2>
       <p>
         ${
           hasMedia
@@ -125,51 +134,77 @@ function renderEmptyState() {
 
 
 // ========================================
+// Display Name (show the video title instead of "index.m3u8")
+// ========================================
+
+function cleanPageTitle(title) {
+  return String(title || "")
+    .replace(/^\(\d+\)\s*/, "") // YouTube notification prefix: "(3) "
+    .replace(/\s*[-–—|·]\s*(YouTube|CHZZK|치지직)\s*$/i, "")
+    .trim();
+}
+
+function displayName(item) {
+  const generic =
+    item.stream ||
+    /^(index|master|playlist|manifest|chunklist)\.(m3u8|mpd)$/i.test(item.title || "");
+  return (
+    (generic && cleanPageTitle(activeTabTitle)) ||
+    item.title ||
+    filenameFromUrl(item.url)
+  );
+}
+
+
+// ========================================
 // Media Item Template
 // ========================================
 
 function createMediaCard(item, index) {
-  const name = item.title || filenameFromUrl(item.url);
+  const name = displayName(item);
   const detail = getMediaDetail(item);
+  const hasVariants = Array.isArray(item.variants) && item.variants.length > 0;
+  const canDownload =
+    item.direct || item.format === "HLS" || item.format === "DASH";
+
+  const variantSelectHtml = hasVariants
+    ? `
+      <select class="quality-select" data-quality="${index}" aria-label="Select quality">
+        ${item.variants
+          .map(
+            (v, vIdx) =>
+              `<option value="${vIdx}">${escapeHtml(v.label)}</option>`
+          )
+          .join("")}
+      </select>
+    `
+    : "";
 
   return `
     <article class="item">
-
       <div class="item-head">
-
-        <div class="file-icon">
-          ${escapeHtml(item.format)}
-        </div>
+        <div class="file-icon">${escapeHtml(item.format)}</div>
 
         <div class="meta">
-
-          <div
-            class="filename"
-            title="${escapeHtml(name)}"
-          >
+          <div class="filename" title="${escapeHtml(name)}">
             ${escapeHtml(name)}
           </div>
-
           <div class="sub">
-            ${escapeHtml(item.source)}
-            ·
-            ${escapeHtml(detail)}
+            ${escapeHtml(item.source)} · ${escapeHtml(detail)}
           </div>
-
         </div>
 
-        <span class="tag">
-          ${escapeHtml(item.format)}
-        </span>
-
+        <span class="tag">${escapeHtml(item.format)}</span>
       </div>
 
       <div class="actions">
+        ${variantSelectHtml}
 
         <button
           class="action primary"
           data-download="${index}"
-          ${item.direct ? "" : "disabled"}
+          data-job="${escapeHtml(item.url)}"
+          ${canDownload ? "" : "disabled"}
         >
           ↓ Download
         </button>
@@ -180,31 +215,7 @@ function createMediaCard(item, index) {
         >
           Copy URL
         </button>
-
       </div>
-
-      ${
-        item.stream
-          ? `
-            <p class="hint">
-              HLS/DASH is detected, but this build does not
-              decrypt streams or combine segmented media.
-            </p>
-          `
-          : ""
-      }
-
-      ${
-        item.blob
-          ? `
-            <p class="hint">
-              Blob URLs are scoped to the page and cannot be
-              downloaded directly by the extension background worker.
-            </p>
-          `
-          : ""
-      }
-
     </article>
   `;
 }
@@ -217,21 +228,17 @@ function createMediaCard(item, index) {
 function render() {
   const filtered = getFilteredMedia();
 
-  // Update total media count
   $("count").textContent = mediaItems.length;
 
-  // Display empty state
   if (!filtered.length) {
     renderEmptyState();
     return;
   }
 
-  // Render media cards
   $("results").innerHTML = filtered
     .map((item, index) => createMediaCard(item, index))
     .join("");
 
-  // Register card events
   bindMediaEvents(filtered);
 }
 
@@ -241,42 +248,48 @@ function render() {
 // ========================================
 
 function bindMediaEvents(filtered) {
-
   // Download buttons
   $("results")
     .querySelectorAll("[data-download]")
     .forEach(button => {
-
       button.addEventListener("click", () => {
         const index = Number(button.dataset.download);
+        const item = filtered[index];
+        const select = $("results").querySelector(`[data-quality="${index}"]`);
+        const variantIndex = select ? Number(select.value) : 0;
+        const selectedVariant = item.variants?.[variantIndex];
 
-        downloadItem(filtered[index], button);
+        downloadItem(item, selectedVariant, button);
       });
-
     });
-
 
   // Copy URL buttons
   $("results")
     .querySelectorAll("[data-copy]")
     .forEach(button => {
-
       button.addEventListener("click", async () => {
         const index = Number(button.dataset.copy);
         const item = filtered[index];
+        const select = $("results").querySelector(`[data-quality="${index}"]`);
+        const variantIndex = select ? Number(select.value) : 0;
+        // A master playlist URL plays with sound in VLC / mpv / ffmpeg;
+        // a single quality URL is video-only
+        const targetUrl =
+          item.hlsKind === "master"
+            ? item.url
+            : item.variants?.[variantIndex]?.url || item.url;
 
         try {
-          await navigator.clipboard.writeText(item.url);
-
+          await navigator.clipboard.writeText(targetUrl);
           button.textContent = "Copied";
+          setTimeout(() => {
+            button.textContent = "Copy URL";
+          }, 1500);
         } catch {
           button.textContent = "Copy failed";
         }
-
       });
-
     });
-
 }
 
 
@@ -284,35 +297,61 @@ function bindMediaEvents(filtered) {
 // Download Manager
 // ========================================
 
-function downloadItem(item, button) {
+async function downloadItem(item, selectedVariant, button) {
+  const jobId = item.url;
+  activeJobs.set(jobId, "⏳ 0%");
+  button.disabled = true;
+  button.textContent = "⏳ 0%";
+
+  // Use the page (video) title as the file name
+  const tab = await chrome.tabs.get(activeTabId).catch(() => null);
+  const pageTitle = cleanPageTitle(tab?.title);
+
+  const variantUrl = selectedVariant?.url || item.url;
+  const qualitySuffix =
+    selectedVariant?.label && selectedVariant.label !== "Default"
+      ? `_${selectedVariant.label}`
+      : "";
+
+  const baseTitle =
+    pageTitle ||
+    (item.title || filenameFromUrl(item.url)).replace(
+      /\.(m3u8|mpd|mp4|webm|mov|m4v|ogv)$/i,
+      ""
+    );
+
   chrome.runtime.sendMessage(
     {
       type: "DOWNLOAD_MEDIA",
+      jobId,
       item,
-      filename: item.title || filenameFromUrl(item.url),
+      variantUrl,
+      audioUrl: selectedVariant?.audioUrl || "",
+      variant: selectedVariant || null,
+      filename: `${baseTitle}${qualitySuffix}`,
       saveAs: false
     },
     response => {
+      activeJobs.delete(jobId);
+      button.disabled = false;
 
-      // Handle Chrome runtime errors
       if (chrome.runtime.lastError) {
+        button.textContent = "↓ Download";
         alert(chrome.runtime.lastError.message);
         return;
       }
 
-      // Handle download errors
       if (!response?.ok) {
+        button.textContent = "↓ Download";
         alert(response?.error || "Could not start download.");
         return;
       }
 
-      // Update download button
-      button.textContent = "✓ Started";
-
+      button.textContent = "✓ Saved";
+      if (response.warning) alert(response.warning);
       setTimeout(() => {
         button.textContent = "↓ Download";
-      }, 1800);
-
+      }, 2000);
     }
   );
 }
@@ -323,8 +362,6 @@ function downloadItem(item, button) {
 // ========================================
 
 async function load() {
-
-  // Show scanning state
   $("results").innerHTML = `
     <div class="empty">
       <div class="empty-icon">◌</div>
@@ -333,52 +370,39 @@ async function load() {
     </div>
   `;
 
-  // Get active browser tab
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true
   });
 
   activeTabId = tab?.id;
+  activeTabTitle = tab?.title || "";
 
-  // Validate current page
   if (!tab || !/^https?:/.test(tab.url || "")) {
     mediaItems = [];
-
     $("results").innerHTML = `
       <div class="empty">
         <div class="empty-icon">!</div>
         <h2>Page unavailable</h2>
-        <p>
-          Open a regular website to scan its media resources.
-        </p>
+        <p>Open a regular website to scan its media resources.</p>
       </div>
     `;
-
     $("count").textContent = "0";
-
     return;
   }
 
-  // Request media list from background
   setTimeout(() => {
-
     chrome.runtime.sendMessage(
       {
         type: "GET_MEDIA",
         tabId: tab.id
       },
       response => {
-
         mediaItems = response?.items || [];
-
         render();
-
       }
     );
-
   }, 250);
-
 }
 
 
@@ -387,9 +411,17 @@ async function load() {
 // ========================================
 
 function syncMedia() {
-  if (activeTabId == null) {
-    return;
-  }
+  if (activeTabId == null) return;
+
+  chrome.tabs
+    .get(activeTabId)
+    .then(t => {
+      if (t && t.title !== activeTabTitle) {
+        activeTabTitle = t.title || "";
+        render();
+      }
+    })
+    .catch(() => {});
 
   chrome.runtime.sendMessage(
     {
@@ -397,18 +429,15 @@ function syncMedia() {
       tabId: activeTabId
     },
     response => {
+      if (!response?.items) return;
 
-      if (!response?.items) {
-        return;
-      }
+      const sig = items =>
+        items.map(i => `${i.url}|${i.variants?.length || 0}`).join("\n");
 
-      // Update only when media count changes
-      if (response.items.length !== mediaItems.length) {
+      if (sig(response.items) !== sig(mediaItems)) {
         mediaItems = response.items;
-
         render();
       }
-
     }
   );
 }
@@ -418,23 +447,11 @@ function syncMedia() {
 // Popup Event Listeners
 // ========================================
 
-// Refresh button
 $("refresh").addEventListener("click", load);
-
-
-// Search input
 $("search").addEventListener("input", render);
-
-
-// Format filter
 $("filter").addEventListener("change", render);
-
-
-// Open Chrome downloads
 $("openDownloads").addEventListener("click", () => {
-  chrome.tabs.create({
-    url: "chrome://downloads"
-  });
+  chrome.tabs.create({ url: "chrome://downloads" });
 });
 
 
@@ -442,9 +459,5 @@ $("openDownloads").addEventListener("click", () => {
 // Application Initialization
 // ========================================
 
-// Initial media scan
 load();
-
-
-// Periodic media synchronization
 setInterval(syncMedia, 1800);

@@ -1,4 +1,4 @@
-# Video Downloader – Advanced
+# Video Downloader
 
 A Chrome Manifest V3 extension that scans ordinary web pages for HTML5 video sources and video-like network resources.
 
