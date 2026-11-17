@@ -1,25 +1,31 @@
 # Video Downloader
 
-A Chrome Manifest V3 extension that scans ordinary web pages for HTML5 video sources and video-like network resources.
+A personal Chrome extension that detects video sources on web pages.
 
-## Supported detection
-- HTML5 `<video>`, `<source>` and direct video links
-- Resource Performance API entries ending in common video extensions
-- MP4, WebM, MOV, M4V, OGV
-- HLS (`.m3u8`) and DASH (`.mpd`) manifest detection
+## Features
+- Detects HTML5 <video> and <source> elements
+- Finds direct links to video files
+- Scans browser performance entries for video-related resources
+- Supports common video formats: MP4, WebM, MOV, M4V, OGV
+- Detects HLS (`.m3u8`) and DASH (`.mpd`) streams
 
-## Download limitations
-- Direct HTTP/HTTPS video files can be sent to Chrome Downloads.
-- HLS/DASH manifests are detected but this build does not assemble segments into a playable file.
-- Blob/data URLs are shown but cannot be downloaded directly by the background worker.
-- DRM, encrypted streams, paywalls, authentication restrictions and site protections are not bypassed.
-- Some sites hide media behind signed requests, Media Source Extensions, service workers, cross-origin restrictions, or custom players. Detection is best-effort, not universal.
-- The extension does not intercept or modify network traffic and does not upload browsing data.
+## Limitations
+- Direct HTTP/HTTPS video files can be downloaded using Chrome Downloads.
+- HLS and DASH streams can be detected, but this version does not combine their segments into a playable video file.
+- Blob and data URLs can be detected, but cannot be downloaded directly.
+- DRM-protected or encrypted streams are not supported.
+- The extension does not bypass paywalls, authentication requirements, or website restrictions.
+- Some websites use custom players, Media Source Extensions, service workers, or other methods that may prevent video detection.
+
+Video detection depends on how each website delivers its media, so not every video will be detected.
 
 ## Permissions
-- `downloads`: start direct downloads
-- `tabs`, `activeTab`: identify the current tab
-- `<all_urls>` host access: run the detector on pages across sites
+- `downloads`: Used to download video files.
+- `tabs`: Used to identify the current browser tab.
+- `activeTab`: Used to access the active tab.
+- `<all_urls>` Allows the extension to detect media on different websites.
 
-## Troubleshooting
-If the extension does not detect a video, reload the page after installing the extension and play the video. Chrome internal pages, Chrome Web Store pages, and some protected frames cannot run content scripts.
+## Development Notes
+This extension is built with Chrome Manifest V3.
+
+To test changes, reload the extension from chrome://extensions and refresh the page being tested.

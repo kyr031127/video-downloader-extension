@@ -158,14 +158,15 @@ async function saveMediaItemsNow(tabId, rawItems, defaultFrameUrl) {
     if (mediaMap.has(item.url) || knownVariantUrls.has(item.url)) continue;
 
     if (item.format === "HLS" && !item.variants) {
-      const variants = await parseHlsVariants(item.url);
+      const { variants, audioOptions } = await parseHlsVariants(item.url);
 
       if (variants.length > 0) {
         item.hlsKind = "master";
         item.variants = variants;
+        item.audioOptions = audioOptions;
 
         for (const v of variants) {
-          for (const u of [v.url, v.audioUrl]) {
+          for (const u of [v.url, v.audioUrl, ...Object.values(v.audioByKey || {})]) {
             if (!u) continue;
             knownVariantUrls.add(u);
             mediaMap.delete(u); // drop variant playlists seen before the master
@@ -194,6 +195,7 @@ async function saveMediaItemsNow(tabId, rawItems, defaultFrameUrl) {
       try {
         const parsed = await parseDashInOffscreen(item.url);
         item.variants = parsed.variants?.length ? parsed.variants : null;
+        item.audioOptions = parsed.audioOptions || [];
       } catch (err) {
         // Not actually an MPD (false positive from the URL/XML hints): ignore
         if (/Not a valid MPD/i.test(err.message)) continue;
@@ -264,17 +266,35 @@ chrome.webRequest.onHeadersReceived.addListener(
 // HLS Master Playlist Parser
 // ========================================
 
+// Audio track naming hints. Sites mark the original track and machine dubs
+// differently, so this is a heuristic; the popup lets the user override it.
+const ORIGINAL_HINT = /original|원본/i;
+const DUBBED_HINT = /dubbed|dubbing|auto-?dub|더빙/i;
+
+function pickPreferredAudio(tracks) {
+  return (
+    tracks.find(t => t.original) ||
+    tracks.find(t => t.isDefault && !t.dubbed) ||
+    tracks.find(t => !t.dubbed) ||
+    tracks.find(t => t.isDefault) ||
+    tracks[0] ||
+    null
+  );
+}
+
 async function parseHlsVariants(masterUrl) {
+  const empty = { variants: [], audioOptions: [] };
+
   try {
     const res = await fetch(masterUrl);
-    if (!res.ok) return [];
+    if (!res.ok) return empty;
 
     const text = await res.text();
-    if (!text.includes("#EXT-X-STREAM-INF")) return [];
+    if (!text.includes("#EXT-X-STREAM-INF")) return empty;
 
     const lines = text.split(/\r?\n/);
 
-    // Separate audio renditions: GROUP-ID -> playlist URL
+    // Separate audio renditions: GROUP-ID -> [tracks]
     const audioGroups = new Map();
     for (const raw of lines) {
       const line = raw.trim();
@@ -284,11 +304,27 @@ async function parseHlsVariants(masterUrl) {
       const uri = line.match(/URI="([^"]+)"/i)?.[1];
       if (!group || !uri) continue;
 
-      const isDefault = /DEFAULT=YES/i.test(line);
-      const prev = audioGroups.get(group);
-      if (!prev || (isDefault && !prev.isDefault)) {
-        audioGroups.set(group, { url: new URL(uri, masterUrl).href, isDefault });
-      }
+      const url = new URL(uri, masterUrl).href;
+      const name = line.match(/NAME="([^"]*)"/i)?.[1] || "";
+      const lang = line.match(/LANGUAGE="([^"]*)"/i)?.[1] || "";
+
+      let decoded = url;
+      try {
+        decoded = decodeURIComponent(url);
+      } catch {}
+
+      const track = {
+        key: `${lang}|${name}`.toLowerCase(),
+        label: name || lang || "Audio",
+        lang,
+        url,
+        isDefault: /DEFAULT=YES/i.test(line),
+        original: ORIGINAL_HINT.test(name) || /acont=original/i.test(decoded),
+        dubbed: DUBBED_HINT.test(name) || /acont=dubbed/i.test(decoded)
+      };
+
+      if (!audioGroups.has(group)) audioGroups.set(group, []);
+      audioGroups.get(group).push(track);
     }
 
     const variants = [];
@@ -300,7 +336,7 @@ async function parseHlsVariants(masterUrl) {
       const resMatch = line.match(/RESOLUTION=(\d+)x(\d+)/i);
       const bwMatch = line.match(/BANDWIDTH=(\d+)/i);
       const fpsMatch = line.match(/FRAME-RATE=([\d.]+)/i);
-      const audioGroup = line.match(/AUDIO="([^"]+)"/i)?.[1];
+      const audioGroup = line.match(/AUDIO="([^"]+)"/i)?.[1] || "";
 
       let streamUrl = "";
       for (let j = i + 1; j < lines.length; j++) {
@@ -317,7 +353,6 @@ async function parseHlsVariants(masterUrl) {
       const height = resMatch ? Number(resMatch[2]) : 0;
       const bandwidth = bwMatch ? Number(bwMatch[1]) : 0;
       const fps = fpsMatch ? Math.round(Number(fpsMatch[1])) : 0;
-      const audioUrl = audioGroup ? audioGroups.get(audioGroup)?.url || "" : "";
 
       let label = "Auto";
       if (height > 0) {
@@ -326,10 +361,33 @@ async function parseHlsVariants(masterUrl) {
         label = `${Math.round(bandwidth / 1000)} kbps`;
       }
 
-      variants.push({ label, height, bandwidth, url: streamUrl, audioUrl });
+      variants.push({ label, height, bandwidth, url: streamUrl, audioGroup });
     }
 
     variants.sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
+
+    // Audio options come from every group; the preferred track is decided
+    // on the best-quality variant and applied to the others by key.
+    const optionMap = new Map();
+    for (const v of variants) {
+      for (const t of audioGroups.get(v.audioGroup) || []) {
+        if (!optionMap.has(t.key)) {
+          optionMap.set(t.key, { key: t.key, label: t.label, lang: t.lang, preferred: false });
+        }
+      }
+    }
+
+    const bestGroup = variants.find(v => audioGroups.has(v.audioGroup))?.audioGroup;
+    const preferredKey = bestGroup ? pickPreferredAudio(audioGroups.get(bestGroup))?.key : null;
+    if (preferredKey) optionMap.get(preferredKey).preferred = true;
+
+    for (const v of variants) {
+      const tracks = audioGroups.get(v.audioGroup) || [];
+      const chosen = tracks.find(t => t.key === preferredKey) || pickPreferredAudio(tracks);
+      v.audioUrl = chosen?.url || "";
+      v.audioByKey = Object.fromEntries(tracks.map(t => [t.key, t.url]));
+      delete v.audioGroup;
+    }
 
     const unique = [];
     const seenLabels = new Set();
@@ -340,9 +398,9 @@ async function parseHlsVariants(masterUrl) {
       }
     }
 
-    return unique;
+    return { variants: unique, audioOptions: [...optionMap.values()] };
   } catch {
-    return [];
+    return empty;
   }
 }
 
@@ -498,12 +556,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (item.format === "HLS" || item.format === "DASH") {
       const source =
         item.format === "HLS"
-          ? { kind: "hls", videoUrl: targetUrl, audioUrl: message.audioUrl || "" }
+          ? {
+              kind: "hls",
+              videoUrl: targetUrl,
+              audioUrl: message.audioChoice || message.audioUrl || ""
+            }
           : {
               kind: "dash",
               mpdUrl: item.url,
               videoRepId: variant?.repId || "",
-              audioRepId: variant?.audioRepId || ""
+              audioRepId: message.audioChoice || variant?.audioRepId || ""
             };
 
       downloadStream(message.jobId || targetUrl, source, message.filename || item.title)

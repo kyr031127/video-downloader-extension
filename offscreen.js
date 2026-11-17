@@ -297,6 +297,9 @@ async function loadDashTracks(mpdUrl) {
       tracks.push({
         kind,
         id: repId,
+        lang: aset.getAttribute("lang") || rep.getAttribute("lang") || "",
+        label: kid(aset, "Label")?.textContent.trim() || "",
+        role: kids(aset, "Role").map(r => r.getAttribute("value")).join(","),
         bandwidth,
         width,
         height,
@@ -313,18 +316,55 @@ async function loadDashTracks(mpdUrl) {
   return tracks;
 }
 
+const ORIGINAL_HINT = /original|원본/i;
+const DUBBED_HINT = /dubbed|dubbing|auto-?dub|더빙/i;
+
+function pickPreferredAudio(tracks) {
+  return (
+    tracks.find(t => t.original) ||
+    tracks.find(t => !t.dubbed) ||
+    tracks[0] ||
+    null
+  );
+}
+
 async function parseMpdVariants(mpdUrl) {
   const tracks = await loadDashTracks(mpdUrl);
-
-  const audios = tracks
-    .filter(t => t.kind === "audio")
-    .sort((a, b) => b.bandwidth - a.bandwidth);
 
   const videos = tracks
     .filter(t => t.kind === "video")
     .sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
 
-  const bestAudio = audios[0];
+  // Best-bandwidth audio representation per language / label / role
+  const audioTracks = new Map();
+  for (const a of tracks
+    .filter(t => t.kind === "audio")
+    .sort((x, y) => y.bandwidth - x.bandwidth)) {
+    const key = `${a.lang}|${a.label}|${a.role}`.toLowerCase();
+    if (audioTracks.has(key)) continue;
+
+    audioTracks.set(key, {
+      key,
+      id: a.id,
+      label: a.label || a.lang || a.id || "Audio",
+      lang: a.lang,
+      original: ORIGINAL_HINT.test(a.label) || /\bmain\b/i.test(a.role),
+      dubbed: DUBBED_HINT.test(a.label) || /\bdub\b/i.test(a.role)
+    });
+  }
+
+  const audioList = [...audioTracks.values()];
+  const preferred = pickPreferredAudio(audioList);
+
+  const audioOptions = audioList.map(t => ({
+    key: t.key,
+    label: t.label,
+    lang: t.lang,
+    preferred: t === preferred
+  }));
+
+  const audioByKey = Object.fromEntries(audioList.map(t => [t.key, t.id]));
+
   const seen = new Set();
   const variants = [];
 
@@ -339,11 +379,12 @@ async function parseMpdVariants(mpdUrl) {
       bandwidth: v.bandwidth,
       url: mpdUrl,
       repId: v.id,
-      audioRepId: bestAudio?.id || ""
+      audioRepId: preferred?.id || "",
+      audioByKey
     });
   }
 
-  return { variants };
+  return { variants, audioOptions };
 }
 
 function pickDashTracks(tracks, videoRepId, audioRepId) {

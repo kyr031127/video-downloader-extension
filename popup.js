@@ -180,6 +180,21 @@ function createMediaCard(item, index) {
     `
     : "";
 
+  const audioOptions = Array.isArray(item.audioOptions) ? item.audioOptions : [];
+  const audioSelectHtml =
+    audioOptions.length > 1
+      ? `
+      <select class="audio-select" data-audio="${index}" aria-label="Select audio track" title="Audio track">
+        ${audioOptions
+          .map(
+            o =>
+              `<option value="${escapeHtml(o.key)}"${o.preferred ? " selected" : ""}>♪ ${escapeHtml(o.label)}</option>`
+          )
+          .join("")}
+      </select>
+    `
+      : "";
+
   return `
     <article class="item">
       <div class="item-head">
@@ -199,6 +214,7 @@ function createMediaCard(item, index) {
 
       <div class="actions">
         ${variantSelectHtml}
+        ${audioSelectHtml}
 
         <button
           class="action primary"
@@ -259,7 +275,9 @@ function bindMediaEvents(filtered) {
         const variantIndex = select ? Number(select.value) : 0;
         const selectedVariant = item.variants?.[variantIndex];
 
-        downloadItem(item, selectedVariant, button);
+        const audioSelect = $("results").querySelector(`[data-audio="${index}"]`);
+
+        downloadItem(item, selectedVariant, button, audioSelect?.value);
       });
     });
 
@@ -297,7 +315,7 @@ function bindMediaEvents(filtered) {
 // Download Manager
 // ========================================
 
-async function downloadItem(item, selectedVariant, button) {
+async function downloadItem(item, selectedVariant, button, audioKey) {
   const jobId = item.url;
   activeJobs.set(jobId, "⏳ 0%");
   button.disabled = true;
@@ -312,6 +330,12 @@ async function downloadItem(item, selectedVariant, button) {
     selectedVariant?.label && selectedVariant.label !== "Default"
       ? `_${selectedVariant.label}`
       : "";
+
+  // Chosen audio track (the preferred one needs no suffix)
+  const audioChoice = audioKey ? selectedVariant?.audioByKey?.[audioKey] || "" : "";
+  const audioOption = item.audioOptions?.find(o => o.key === audioKey);
+  const audioSuffix =
+    audioOption && !audioOption.preferred ? `_${audioOption.lang || audioOption.label}` : "";
 
   const baseTitle =
     pageTitle ||
@@ -328,7 +352,8 @@ async function downloadItem(item, selectedVariant, button) {
       variantUrl,
       audioUrl: selectedVariant?.audioUrl || "",
       variant: selectedVariant || null,
-      filename: `${baseTitle}${qualitySuffix}`,
+      audioChoice,
+      filename: `${baseTitle}${qualitySuffix}${audioSuffix}`,
       saveAs: false
     },
     response => {
